@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
+use std::str;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -23,6 +24,7 @@ use std::time::SystemTime;
 use futures::executor::block_on_stream;
 use jj_lib::backend::CommitId;
 use jj_lib::backend::CopyRecord;
+use jj_lib::backend::MergedTreeId;
 use jj_lib::commit::Commit;
 use jj_lib::git_backend::GitBackend;
 use jj_lib::git_backend::JJ_TREES_COMMIT_HEADER;
@@ -332,4 +334,54 @@ fn test_jj_trees_header_with_one_tree() {
         },
     )
     "#);
+}
+
+#[test]
+fn test_change_id_in_git_headers() {
+    let test_repo = TestRepo::init_with_backend(TestRepoBackend::Git);
+    let repo = test_repo.repo;
+    let mut tx = repo.start_transaction();
+
+    // Get root commit id
+    let root_commit_id = tx.repo().store().root_commit_id().clone();
+
+    // Create a simple tree with a file
+    let file_path = RepoPath::from_internal_string("test-file");
+    let tree = create_single_tree(&repo, &[(file_path, "test content")]);
+
+    // Create a new commit
+    let commit = tx
+        .repo_mut()
+        .new_commit(
+            vec![root_commit_id],
+            MergedTreeId::resolved(tree.id().clone()),
+        )
+        .set_description("test commit")
+        .write()
+        .unwrap();
+    let repo = tx.commit("create test commit").unwrap();
+
+    // Get the GitBackend to inspect the Git commit
+    let git_backend = get_git_backend(&repo);
+
+    // Get the commit from the Git repository
+    let commit_id = commit.id();
+    let git_repo = git_backend.git_repo();
+    let git_object = git_repo
+        .find_object(gix::ObjectId::from_bytes_or_panic(commit_id.as_bytes()))
+        .unwrap();
+    let git_commit_obj = git_object.into_commit();
+    let commit_data = git_commit_obj.decode().unwrap();
+
+    // Check that the Change-Id header exists and matches the commit's change_id
+    let expected_change_id = format!("{}", commit.change_id());
+    let has_change_id_header = commit_data.extra_headers.iter().any(|(key, value)| {
+        let key_str = String::from_utf8_lossy(key).into_owned();
+        key_str == "change-id" && str::from_utf8(value).unwrap() == expected_change_id
+    });
+
+    assert!(
+        has_change_id_header,
+        "change-id header not found or incorrect in Git commit"
+    );
 }

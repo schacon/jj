@@ -1216,6 +1216,14 @@ impl Backend for GitBackend {
                 ));
             }
         }
+
+        // Add change-id to Git commit headers
+        let change_id_value = format!("{}", contents.change_id);
+        extra_headers.push((
+            BString::new(b"change-id".to_vec()),
+            BString::new(change_id_value.into_bytes()),
+        ));
+
         let extras = serialize_extras(&contents);
 
         // If two writers write commits of the same id with different metadata, they
